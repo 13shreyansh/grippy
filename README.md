@@ -7,10 +7,13 @@
 **AI-powered consumer complaint filing for Singapore**
 
 ![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)
-![FastAPI](https://img.shields.io/badge/FastAPI-API-009688?logo=fastapi&logoColor=white)
-![Mistral](https://img.shields.io/badge/Mistral-mistral--large--2411-black)
-![License](https://img.shields.io/badge/License-MIT-green)
-![Status](https://img.shields.io/badge/Stage-Hackathon%20to%20Startup-orange)
+![FastAPI](https://img.shields.io/badge/FastAPI-Backend-009688?logo=fastapi&logoColor=white)
+![Mistral](https://img.shields.io/badge/Mistral-mistral--large--2411-0f172a)
+![Browser Automation](https://img.shields.io/badge/Browser%20Use%20%2B%20Playwright-Automation-1d4ed8)
+![License](https://img.shields.io/badge/License-MIT-16a34a)
+![Open Source](https://img.shields.io/badge/Open%20Source-Yes-7c3aed)
+
+[Problem](#the-problem) • [Solution](#the-solution) • [Demo](#demo) • [How It Works](#how-it-works) • [Architecture](#architecture) • [Quick Start](#quick-start) • [Tech Stack](#tech-stack) • [Vision](#vision)
 
 </div>
 
@@ -20,6 +23,7 @@
 
 - [The Problem](#the-problem)
 - [The Solution](#the-solution)
+- [Demo](#demo)
 - [How It Works](#how-it-works)
 - [Architecture](#architecture)
 - [Supported Companies](#supported-companies)
@@ -30,11 +34,23 @@
 - [Team](#team)
 - [License](#license)
 
+## Demo
+
+<div align="center">
+
+### Watch Product Demo
+
+[![Watch Product Demo](https://img.youtube.com/vi/fDRdVb2eFJA/maxresdefault.jpg)](https://youtu.be/fDRdVb2eFJA)
+
+[▶ Watch on YouTube](https://youtu.be/fDRdVb2eFJA)
+
+</div>
+
 ## The Problem
 
-96% of consumers never file a formal complaint.
+96% of consumers never formally complain.
 
-Not because they do not care, but because the process is broken. People must figure out which portal to use, write formal legal-style complaint letters, fill long forms with strict formatting, and understand escalation paths across regulators. Most give up before submission.
+The process is broken for ordinary people. Filing a complaint often means discovering the right portal, understanding complex forms, writing formal legal-style letters, and figuring out whether and how to escalate to a regulator. Most users give up before filing.
 
 ## The Solution
 
@@ -42,43 +58,51 @@ Talk to Grippy like a friend.
 
 Three messages. One complaint. Zero forms.
 
-Grippy collects the facts conversationally, generates formal complaint letters citing the Consumer Protection (Fair Trading) Act, files directly with companies, and escalates to the right government regulator automatically.
+Grippy handles intake conversationally, generates formal complaint letters that reference the Consumer Protection (Fair Trading) Act, files directly with companies through email or automation, and escalates to the right regulator automatically when needed.
 
 ## How It Works
 
-### 1. Chat
-Describe your issue naturally. No legal language, no templates, no forms.
+1. **Chat**
+Describe what happened in plain language. Grippy extracts the details naturally.
 
-### 2. File
-Grippy routes and files automatically via email or browser automation.
+2. **File**
+Grippy routes your case and files it automatically via email or browser automation.
 
-### 3. Escalate
-One tap to escalate to the correct regulator: CASE, IMDA, MAS, or LTA.
+3. **Escalate**
+If needed, Grippy escalates in one tap to CASE, IMDA, MAS, or LTA.
 
 ## Architecture
 
 ```text
-+-----------------------+        +-----------------------------+
-| Frontend              |        | FastAPI Backend             |
-| Vanilla HTML/CSS/JS   | <----> | Orchestration + SSE Streams |
-+-----------+-----------+        +--------------+--------------+
-            |                                    |
-            |                                    |
-            v                                    v
-+------------------------+          +----------------------------+
-| Mistral AI             |          | Browser Use + Playwright   |
-| mistral-large-2411     |          | Web form automation        |
-| Conversation + letters |          +----------------------------+
++------------------------+        +-----------------------------+
+| Frontend               | <----> | FastAPI Backend             |
+| Vanilla HTML/CSS/JS    |        | Routing + orchestration +   |
+| Chat + verify + status |        | SSE progress streaming      |
++-----------+------------+        +--------------+--------------+
+            |                                      |
+            |                                      |
+            v                                      v
++------------------------+            +----------------------------+
+| Mistral AI             |            | Browser Use + Playwright   |
+| mistral-large-2411     |            | Web form automation        |
+| Conversation + letters |            +----------------------------+
 +-----------+------------+                         |
             |                                      |
             v                                      v
-+------------------------+          +----------------------------+
-| Gmail SMTP             |          | Government / Company Portals|
-| Complaint email filing |          | CASE / IMDA / MAS / LTA     |
-+------------------------+          +----------------------------+
++------------------------+            +----------------------------+
+| Gmail SMTP             |            | Company + Regulator Portals|
+| Email complaint filing |            | CASE / IMDA / MAS / LTA    |
++------------------------+            +----------------------------+
 
-(Voice layer: ElevenLabs integration planned)
+(Voice layer: ElevenLabs — coming soon)
 ```
+
+- **Backend:** FastAPI
+- **LLM engine:** Mistral AI (`mistral-large-2411`)
+- **Web automation:** Browser Use + Playwright
+- **Email filing:** Gmail SMTP
+- **Frontend:** Vanilla HTML/CSS/JS
+- **Voice (planned):** ElevenLabs
 
 ## Supported Companies
 
@@ -104,14 +128,26 @@ One tap to escalate to the correct regulator: CASE, IMDA, MAS, or LTA.
 
 ## Quick Start
 
+1. Clone
+
 ```bash
-git clone https://github.com/<your-username>/grippy.git
+git clone https://github.com/13shreyansh/grippy.git
 cd grippy
+```
+
+2. Install dependencies
+
+```bash
 pip install -r requirements.txt
+```
+
+3. Install browser runtime
+
+```bash
 python -m playwright install chromium
 ```
 
-Create a `.env` file:
+4. Create `.env`
 
 ```env
 MISTRAL_API_KEY=your_mistral_api_key
@@ -119,7 +155,7 @@ GRIPPY_EMAIL=your_sender_gmail_address
 GRIPPY_EMAIL_APP_PASSWORD=your_gmail_app_password
 ```
 
-Run:
+5. Run
 
 ```bash
 uvicorn app:app --port 8000 --reload
@@ -127,21 +163,21 @@ uvicorn app:app --port 8000 --reload
 
 ## Tech Stack
 
-| Component | Technology |
-|---|---|
-| Backend | FastAPI |
-| AI Conversation | Mistral AI |
-| AI Letter Writing | Mistral AI |
-| Browser Automation | Browser Use + Playwright |
-| Email Filing | Gmail SMTP |
-| Voice | ElevenLabs (coming soon) |
-| Frontend | Vanilla HTML/CSS/JS |
+| Layer | Technology | Purpose |
+|---|---|---|
+| Backend | FastAPI | API endpoints, orchestration, SSE streaming |
+| AI Conversation | Mistral AI | Conversational complaint intake |
+| AI Letter Writing | Mistral AI | Formal complaint letter generation |
+| Browser Automation | Browser Use + Playwright | Automated web form filing |
+| Email Filing | Gmail SMTP | Direct complaint delivery and CC |
+| Voice | ElevenLabs (coming soon) | Voice-first complaint filing UX |
+| Frontend | Vanilla HTML/CSS/JS | Chat, verify, and live status interfaces |
 
 ## Vision
 
-Built for Singapore, but the model works anywhere.
+Grippy is built for Singapore first, but the model is global.
 
-Every country has consumer protection laws. Every consumer deserves a friend who knows how to use them.
+Consumer protection is universal. Every country has consumer rights frameworks, and every consumer deserves a friend who knows how to use the system.
 
 Roadmap:
 
@@ -156,4 +192,4 @@ Team: The CS Guy
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
