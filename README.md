@@ -152,7 +152,7 @@ Roadmap:
 
 ## Team
 
-Built at the OpenAI Singapore Hackathon, March 2026.
+Team: The CS Guy
 
 ## License
 
