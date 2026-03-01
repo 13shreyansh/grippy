@@ -11,19 +11,17 @@ from email.mime.text import MIMEText
 from typing import Any, AsyncGenerator
 from uuid import uuid4
 
+import requests
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
-
-try:
-    from browser_use import Agent, Browser
-    from browser_use.llm.mistral import ChatMistral
-
-    BROWSER_USE_AVAILABLE = True
-except ImportError:
-    BROWSER_USE_AVAILABLE = False
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+from playwright.async_api import async_playwright
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+TINYFISH_URL = "https://agent.tinyfish.ai/v1/automation/run-sse"
+CASE_PORTAL_URL = "http://crdcomplaints.azurewebsites.net/"
 DEMO_CC_EMAIL = os.getenv("DEMO_EMAIL", "")
 
 DEFAULT_PROFILE = {
@@ -35,6 +33,9 @@ DEFAULT_PROFILE = {
     "complainant_block": "123",
     "complainant_street": "Orchard Road",
     "complainant_postal_code": "238888",
+    "complainant_nric_last4": "567A",
+    "complainant_gender": "Male",
+    "complainant_year_of_birth": "1995",
 }
 
 
@@ -235,7 +236,7 @@ async def _execute_email_mode(
     app_password = _read_text(os.getenv("GRIPPY_EMAIL_APP_PASSWORD"))
     demo_email = _read_text(DEMO_CC_EMAIL).strip()
     intended_recipient = _read_text(routing.get("email"))
-    recipient_email = demo_email or _read_text(routing.get("email"))
+    recipient_email = demo_email
     cc_email = demo_email or _read_text(profile.get("complainant_email"))
     subject = (
         f"Formal Complaint — {routing['name']} — "
@@ -246,7 +247,7 @@ async def _execute_email_mode(
         subject = subject_override
 
     if not sender_email or not app_password or not recipient_email:
-        raise ValueError("Missing GRIPPY_EMAIL, GRIPPY_EMAIL_APP_PASSWORD, or routing email.")
+        raise ValueError("Missing GRIPPY_EMAIL, GRIPPY_EMAIL_APP_PASSWORD, or DEMO_EMAIL.")
 
     clean_letter = _sanitize_email_body(letter)
     if case_reference:
@@ -288,53 +289,332 @@ async def _execute_email_mode(
         )
 
 
-def _extract_confirmation(result: Any) -> str | None:
-    if isinstance(result, dict):
-        keys = ["confirmation_number", "reference_number", "reference", "confirmation"]
-        for key in keys:
-            value = result.get(key)
-            if value:
-                return str(value)
-        return json.dumps(result)
-    if isinstance(result, str):
-        return result
-    if result is None:
+def _is_case_route(routing: dict[str, Any]) -> bool:
+    url = _read_text(routing.get("url")).lower()
+    name = _read_text(routing.get("name")).lower()
+    return "crdcomplaints.azurewebsites.net" in url or "case" in name
+
+
+def _normalize_phone(value: str) -> str:
+    return re.sub(r"\D", "", _read_text(value))
+
+
+def _normalize_nric_last4(value: str) -> str:
+    text = _read_text(value).strip().upper()
+    if re.fullmatch(r"\d{3}[A-Z]", text):
+        return text
+    match = re.search(r"(\d{3}[A-Z])$", text)
+    if match:
+        return match.group(1)
+    return text
+
+
+def _extract_case_confirmation(page_text: str) -> str | None:
+    body = " ".join(_read_text(page_text).split())
+    if not body:
         return None
-    for attr in ("confirmation_number", "reference_number", "reference", "final_result"):
-        if hasattr(result, attr):
-            value = getattr(result, attr)
-            if value:
-                return str(value)
-    return str(result)
+
+    patterns = [
+        r"(?:reference|case|complaint)\s*(?:no\.?|number|#)?\s*[:\-]?\s*([A-Za-z0-9\-]{5,})",
+        r"\b([A-Z]\d{7,12})\b",
+        r"\b([A-Z]{1,3}-\d{4,12})\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, body, flags=re.IGNORECASE)
+        if match:
+            return _read_text(match.group(1)).strip().rstrip(".,")
+    return None
 
 
-def _result_to_json(result: Any) -> dict[str, Any]:
-    if isinstance(result, dict):
-        return result
-    if isinstance(result, str):
+def _tinyfish_scout_sync(portal_url: str, goal: str, api_key: str) -> list[dict[str, Any]]:
+    response = requests.post(
+        TINYFISH_URL,
+        headers={
+            "X-API-Key": api_key,
+            "Content-Type": "application/json",
+        },
+        json={"url": portal_url, "goal": goal},
+        stream=True,
+        timeout=120,
+    )
+    response.raise_for_status()
+
+    events: list[dict[str, Any]] = []
+    for line in response.iter_lines():
+        if not line:
+            continue
+        decoded = line.decode("utf-8", errors="ignore").strip()
+        if not decoded.startswith("data:"):
+            continue
+        raw = decoded[5:].strip()
+        if not raw or raw == "[DONE]":
+            continue
         try:
-            parsed = json.loads(result)
-            if isinstance(parsed, dict):
-                return parsed
-            return {"raw": result}
+            event = json.loads(raw)
         except json.JSONDecodeError:
-            return {"raw": result}
-    return {"raw": str(result)}
+            continue
+        if isinstance(event, dict):
+            events.append(event)
+        if len(events) >= 30:
+            break
+    return events
 
 
-async def _delayed_progress(
-    delay_seconds: int,
-    purpose: str,
+async def _run_tinyfish_scout(
+    portal_url: str,
     run_id: str,
     sse_queue: asyncio.Queue,
 ) -> None:
-    await asyncio.sleep(delay_seconds)
+    api_key = _read_text(os.getenv("TINYFISH_API_KEY")).strip()
+    if not api_key:
+        raise ValueError("Missing TINYFISH_API_KEY for portal scouting.")
+
+    goal = (
+        "Scout this portal and identify how to start complaint filing. "
+        "Find the complaint entrypoint and summarize required steps and visible mandatory fields."
+    )
     await _push_event(
         sse_queue=sse_queue,
         event_type="PROGRESS",
-        purpose=purpose,
+        purpose="TinyFish is scouting the portal flow...",
         run_id=run_id,
     )
+
+    events = await asyncio.to_thread(_tinyfish_scout_sync, portal_url, goal, api_key)
+    surfaced = 0
+    for event in events:
+        event_type = _read_text(event.get("type")).upper()
+        purpose = _read_text(event.get("purpose") or event.get("message") or event.get("status"))
+        if event_type == "HEARTBEAT" or "HEARTBEAT" in purpose.upper():
+            continue
+        if purpose:
+            await _push_event(
+                sse_queue=sse_queue,
+                event_type="PROGRESS",
+                purpose=f"TinyFish: {purpose}",
+                run_id=run_id,
+            )
+            surfaced += 1
+        if surfaced >= 3 or event_type in {"COMPLETE", "COMPLETED"}:
+            break
+
+
+async def _fill_text_field(page: Any, labels: list[str], value: str) -> bool:
+    text = _read_text(value).strip()
+    if not text:
+        return False
+
+    for label in labels:
+        pattern = re.compile(re.escape(label), re.IGNORECASE)
+        try:
+            await page.get_by_label(pattern).first.fill(text, timeout=2500)
+            return True
+        except Exception:
+            pass
+        try:
+            await page.get_by_placeholder(pattern).first.fill(text, timeout=2500)
+            return True
+        except Exception:
+            pass
+
+        token = re.sub(r"[^a-z0-9]", "", label.lower())
+        if not token:
+            continue
+        selector = (
+            f"input[name*='{token}'],textarea[name*='{token}'],"
+            f"input[id*='{token}'],textarea[id*='{token}']"
+        )
+        try:
+            locator = page.locator(selector).first
+            await locator.fill(text, timeout=2500)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+async def _select_field_option(page: Any, labels: list[str], value: str) -> bool:
+    text = _read_text(value).strip()
+    if not text:
+        return False
+
+    for label in labels:
+        pattern = re.compile(re.escape(label), re.IGNORECASE)
+        locator = page.get_by_label(pattern).first
+        for method, val in (("label", text), ("value", text)):
+            try:
+                await locator.select_option(**{method: val}, timeout=2500)
+                return True
+            except Exception:
+                continue
+    return False
+
+
+async def _click_action(page: Any, names: list[str], required: bool = True) -> bool:
+    for name in names:
+        pattern = re.compile(re.escape(name), re.IGNORECASE)
+        try:
+            await page.get_by_role("button", name=pattern).first.click(timeout=3000)
+            return True
+        except Exception:
+            pass
+        try:
+            await page.get_by_role("link", name=pattern).first.click(timeout=3000)
+            return True
+        except Exception:
+            pass
+    if required:
+        raise RuntimeError(f"Unable to click required action: {names[0]}")
+    return False
+
+
+async def _check_consent(page: Any) -> bool:
+    labels = [
+        "I agree that by submitting my complaint",
+        "I agree",
+        "consent to the use of my personal data",
+    ]
+    for label in labels:
+        try:
+            await page.get_by_label(re.compile(re.escape(label), re.IGNORECASE)).first.check(
+                timeout=3000,
+                force=True,
+            )
+            return True
+        except Exception:
+            continue
+
+    try:
+        locator = page.locator("input[type='checkbox']").first
+        await locator.check(timeout=3000, force=True)
+        return True
+    except Exception:
+        return False
+
+
+async def _submit_case_web_form(
+    complaint_data: dict[str, Any],
+    routing: dict[str, Any],
+    run_id: str,
+    sse_queue: asyncio.Queue,
+) -> str | None:
+    profile = _get_profile(complaint_data)
+    portal_url = _read_text(routing.get("url")) or CASE_PORTAL_URL
+
+    nric_value = _normalize_nric_last4(
+        _read_text(profile.get("nric") or profile.get("complainant_nric_last4"))
+    )
+    phone_value = _normalize_phone(_read_text(profile.get("complainant_phone")))
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(headless=True)
+        context = await browser.new_context(ignore_https_errors=True)
+        page = await context.new_page()
+        page.set_default_timeout(12000)
+
+        try:
+            await page.goto(portal_url, wait_until="domcontentloaded")
+            try:
+                await page.wait_for_load_state("networkidle", timeout=10000)
+            except PlaywrightTimeoutError:
+                pass
+
+            await _push_event(
+                sse_queue=sse_queue,
+                event_type="PROGRESS",
+                purpose="Opening CASE complaint form...",
+                run_id=run_id,
+            )
+            await _click_action(
+                page,
+                ["File a Complaint", "Lodge a Complaint", "Submit Complaint"],
+                required=False,
+            )
+
+            await _push_event(
+                sse_queue=sse_queue,
+                event_type="PROGRESS",
+                purpose="Filling personal particulars...",
+                run_id=run_id,
+            )
+            await _select_field_option(page, ["Salutation"], profile.get("complainant_salutation", ""))
+            await _fill_text_field(page, ["Given name", "Given Name"], profile.get("complainant_given_name", ""))
+            await _fill_text_field(page, ["Family name", "Family Name"], profile.get("complainant_family_name", ""))
+            await _fill_text_field(page, ["NRIC number", "NRIC"], nric_value)
+            await _select_field_option(page, ["Gender"], profile.get("complainant_gender", ""))
+            await _fill_text_field(page, ["Year of birth", "Year"], profile.get("complainant_year_of_birth", ""))
+            await _fill_text_field(page, ["Email address", "Email"], profile.get("complainant_email", ""))
+            await _fill_text_field(page, ["Phone number (mobile)", "Phone", "Mobile"], phone_value)
+            await _fill_text_field(page, ["Block/house number", "Block", "House number"], profile.get("complainant_block", ""))
+            await _fill_text_field(page, ["Street"], profile.get("complainant_street", ""))
+            await _fill_text_field(page, ["Postal code", "Postal"], profile.get("complainant_postal_code", ""))
+            await _click_action(page, ["NEXT STEP", "Next Step"])
+
+            await _push_event(
+                sse_queue=sse_queue,
+                event_type="PROGRESS",
+                purpose="Filling vendor details...",
+                run_id=run_id,
+            )
+            await _fill_text_field(
+                page,
+                ["Vendor name", "Vendor Name"],
+                complaint_data.get("complaint_company", "") or routing.get("name", ""),
+            )
+            await _fill_text_field(page, ["Vendor block/house number", "Vendor Block", "Vendor house"], "1")
+            await _fill_text_field(page, ["Vendor street name", "Vendor Street", "Street"], "Unknown")
+            await _fill_text_field(page, ["Vendor postal code", "Vendor Postal", "Postal"], "000000")
+            await _click_action(page, ["NEXT STEP", "Next Step"])
+
+            await _push_event(
+                sse_queue=sse_queue,
+                event_type="PROGRESS",
+                purpose="Filling complaint information...",
+                run_id=run_id,
+            )
+            await _select_field_option(
+                page,
+                ["Transaction type", "Transaction Type"],
+                complaint_data.get("transaction_type", "Purchase"),
+            )
+            await _fill_text_field(
+                page,
+                ["Transaction date", "Date of transaction", "Transaction Date"],
+                complaint_data.get("complaint_date", ""),
+            )
+            await _select_field_option(
+                page,
+                ["Desired outcome", "Desired Outcome"],
+                complaint_data.get("complaint_desired_outcome", "Others"),
+            )
+            await _fill_text_field(
+                page,
+                ["Complaint summary", "Summary", "Description"],
+                complaint_data.get("complaint_description", ""),
+            )
+            await _click_action(page, ["NEXT STEP", "Next Step"])
+
+            await _push_event(
+                sse_queue=sse_queue,
+                event_type="PROGRESS",
+                purpose="Submitting declaration...",
+                run_id=run_id,
+            )
+            if not await _check_consent(page):
+                raise RuntimeError("Unable to check mandatory consent checkbox on declaration page.")
+
+            await _click_action(page, ["SUBMIT", "Submit"])
+            await page.wait_for_load_state("domcontentloaded")
+            try:
+                await page.wait_for_load_state("networkidle", timeout=10000)
+            except PlaywrightTimeoutError:
+                pass
+
+            body_text = await page.text_content("body")
+            return _extract_case_confirmation(_read_text(body_text))
+        finally:
+            await context.close()
+            await browser.close()
 
 
 async def _execute_web_form_mode(
@@ -344,7 +624,8 @@ async def _execute_web_form_mode(
     run_id: str,
     sse_queue: asyncio.Queue,
 ) -> None:
-    confirmation_number = "T2026023926"
+    if not _is_case_route(routing):
+        raise RuntimeError("Deterministic web_form automation is currently implemented only for CASE.")
 
     await _push_event(
         sse_queue=sse_queue,
@@ -353,60 +634,37 @@ async def _execute_web_form_mode(
         run_id=run_id,
     )
 
-    await asyncio.sleep(4)
-    await _push_event(
-        sse_queue=sse_queue,
-        event_type="PROGRESS",
-        purpose="Navigating to CASE portal...",
+    await _run_tinyfish_scout(
+        portal_url=_read_text(routing.get("url")) or CASE_PORTAL_URL,
         run_id=run_id,
+        sse_queue=sse_queue,
     )
 
-    await asyncio.sleep(5)
     await _push_event(
         sse_queue=sse_queue,
         event_type="PROGRESS",
-        purpose="Loading complaint form...",
+        purpose="Executing deterministic Playwright filing on CASE portal...",
         run_id=run_id,
     )
-
-    await asyncio.sleep(6)
-    await _push_event(
-        sse_queue=sse_queue,
-        event_type="PROGRESS",
-        purpose="Filling in your details...",
-        run_id=run_id,
-    )
-
-    await asyncio.sleep(5)
-    await _push_event(
-        sse_queue=sse_queue,
-        event_type="PROGRESS",
-        purpose="Reviewing and submitting...",
-        run_id=run_id,
-    )
-
-    await asyncio.sleep(4)
-    await _push_event(
-        sse_queue=sse_queue,
-        event_type="PROGRESS",
-        purpose="Submission confirmed.",
-        run_id=run_id,
-    )
+    confirmation_number = await _submit_case_web_form(complaint_data, routing, run_id, sse_queue)
+    display_confirmation = confirmation_number or "Not provided"
 
     await _push_event(
         sse_queue=sse_queue,
         event_type="COMPLETE",
         purpose="Form submitted successfully. Complaint registered with CASE Singapore.",
         run_id=run_id,
-        confirmation_number=confirmation_number,
+        confirmation_number=display_confirmation,
         result_json={
             "stage": stage,
             "target_name": _read_text(routing.get("name", "CASE Singapore")),
             "method": "web_form",
-            "confirmation": confirmation_number,
+            "confirmation_number": display_confirmation,
         },
     )
 
+    reference_for_email = confirmation_number or None
+    subject_reference = confirmation_number or "Not provided"
     try:
         await _execute_email_mode(
             complaint_data=complaint_data,
@@ -416,13 +674,13 @@ async def _execute_web_form_mode(
             sse_queue=sse_queue,
             emit_events=False,
             subject_override=(
-                f"CASE Complaint Filed — Reference {confirmation_number} — "
+                f"CASE Complaint Filed — Reference {subject_reference} — "
                 f"{routing.get('name', '')} — {complaint_data.get('complaint_date', '')}"
             ),
-            case_reference=confirmation_number,
+            case_reference=reference_for_email,
         )
     except Exception:
-        logger.exception("Email send after web form simulation failed.")
+        logger.exception("Email send after CASE web form filing failed.")
         print(traceback.format_exc())
 
 

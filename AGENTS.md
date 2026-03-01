@@ -1,23 +1,25 @@
 # AGENTS.md — Grippy
 
 ## Stack
-- Python 3.11, FastAPI, OpenAI API (gpt-4o), TinyFish API
+- Python 3.11, FastAPI, Mistral AI (`mistral-large-2411`), TinyFish API + Playwright scripts
 - Frontend: plain HTML + CSS + vanilla JavaScript (no React, no framework)
 - Templating: Jinja2 (built into FastAPI)
 
 ## Commands
 - Install dependencies: pip install -r requirements.txt
+- Install browser runtime: python -m playwright install chromium
 - Run server: uvicorn app:app --reload --port 8000
 - Run tests: pytest tests/ -v
 
 ## Project Structure
 - app.py — FastAPI server, all routes
-- agent/intake.py — OpenAI chat logic for extracting complaint data
+- agent/intake.py — Mistral chat logic for extracting complaint data
 - agent/router.py — Maps complaint type to target portal URL
-- agent/executor.py — TinyFish API call to file the complaint
+- agent/executor.py — TinyFish scouting + Playwright/email filing orchestration
 - templates/ — HTML templates
 - static/ — CSS and JS files
 - tests/ — All test files
+- Current deterministic Playwright coverage is CASE-first (`crdcomplaints.azurewebsites.net`); other web routes should use email mode in this repo.
 
 ## Code Style
 - Type hints on all function signatures

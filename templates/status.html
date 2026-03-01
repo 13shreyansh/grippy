@@ -1329,10 +1329,11 @@
         : {};
       const rawStage = String(resultJson.stage || "").trim().toLowerCase();
       let stage = rawStage;
+      let method = String(resultJson.method || resultJson.mode || "").trim().toLowerCase();
 
       let targetName = String(resultJson.target_name || "").trim();
       if (!targetName) {
-        const confirmationMatch = String(confirmation || "").match(/Email sent to\s+(.+)$/i);
+        const confirmationMatch = String(confirmation || "").match(/Complaint sent to\s+([^\.]+)\./i);
         if (confirmationMatch && confirmationMatch[1]) {
           targetName = confirmationMatch[1].trim();
         }
@@ -1342,11 +1343,25 @@
         const confirmationText = String(confirmation || "").toLowerCase();
         if (confirmationText.includes("consult@case.org.sg")) {
           stage = "regulator";
-        } else if (confirmationText.includes("email sent to")) {
+        } else if (confirmationText.includes("complaint sent to")) {
+          stage = "company";
+        } else if (method === "web_form") {
           stage = "company";
         }
       }
 
+      if (!method) {
+        const confirmationText = String(confirmation || "").toLowerCase();
+        if (confirmationText.includes("complaint sent to")) {
+          method = "email";
+        } else if (resultJson.confirmation_number || resultJson.confirmation) {
+          method = "web_form";
+        }
+      }
+
+      if (!targetName && method === "web_form") {
+        targetName = "CASE Singapore portal";
+      }
       if (!targetName && stage === "regulator") {
         targetName = "the regulator";
       }
@@ -1354,7 +1369,7 @@
         targetName = "the company";
       }
 
-      return { stage, targetName };
+      return { stage, targetName, method };
     }
 
     function launchConfetti() {
@@ -1433,7 +1448,10 @@
 
       const summary = extractCompletionSummary(event, currentConfirmation);
       if (verifyTitle && verifyMessage) {
-        if (summary.stage === "regulator") {
+        if (summary.method === "web_form") {
+          verifyTitle.textContent = summary.stage === "regulator" ? "Escalation submitted" : "Complaint submitted";
+          verifyMessage.textContent = `Your complaint was submitted on ${summary.targetName}.`;
+        } else if (summary.stage === "regulator") {
           verifyTitle.textContent = "Escalation submitted";
           verifyMessage.textContent = `Your complaint has been escalated to ${summary.targetName}. They will review your case.`;
         } else if (summary.stage === "company") {
