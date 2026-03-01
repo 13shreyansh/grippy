@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Grippy — Chat</title>
+  <meta name="description" content="Chat with Grippy to file your complaint in minutes." />
+  <style>
+    :root {
+      color-scheme: light;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: #ffffff;
+      color: #1a1a1a;
+      font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;
+    }
+
+    .brand {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      border-bottom: 1px solid #e5e7eb;
+      background: #ffffff;
+      padding: 12px 16px;
+    }
+
+    .brand-inner {
+      max-width: 640px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .brand-logo {
+      font-size: 1.25rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+    }
+
+    .brand-sub {
+      color: #6b7280;
+      font-size: 0.9rem;
+    }
+
+    .chat-shell {
+      max-width: 640px;
+      margin: 0 auto;
+      padding: 16px;
+      height: calc(100vh - 136px);
+    }
+
+    .messages {
+      height: 100%;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding-bottom: 8px;
+    }
+
+    .bubble {
+      max-width: 85%;
+      padding: 10px 14px;
+      border-radius: 14px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .bubble.user {
+      align-self: flex-end;
+      background: #16a34a;
+      color: #ffffff;
+    }
+
+    .bubble.ai {
+      align-self: flex-start;
+      background: #f3f4f6;
+      color: #1a1a1a;
+    }
+
+    .composer {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      border-top: 1px solid #e5e7eb;
+      background: #ffffff;
+      padding: 12px 16px;
+    }
+
+    .composer-inner {
+      max-width: 640px;
+      margin: 0 auto;
+      display: flex;
+      gap: 8px;
+    }
+
+    #messageInput {
+      flex: 1;
+      border: 1px solid #d1d5db;
+      border-radius: 10px;
+      padding: 10px 12px;
+      font: inherit;
+      color: #1a1a1a;
+      outline: none;
+    }
+
+    #sendButton {
+      border: 0;
+      border-radius: 10px;
+      padding: 10px 14px;
+      background: #16a34a;
+      color: #ffffff;
+      font: inherit;
+      cursor: pointer;
+    }
+
+    #sendButton:disabled {
+      opacity: 0.7;
+      cursor: default;
+    }
+  </style>
+</head>
+<body>
+  <header class="brand">
+    <div class="brand-inner">
+      <div class="brand-logo">Grippy</div>
+      <div class="brand-sub">Just grip it.</div>
+    </div>
+  </header>
+
+  <main class="chat-shell">
+    <section id="messages" class="messages"></section>
+  </main>
+
+  <form id="chatForm" class="composer">
+    <div class="composer-inner">
+      <input id="messageInput" type="text" placeholder="Describe your issue..." autocomplete="off" required />
+      <button id="sendButton" type="submit">Send</button>
+    </div>
+  </form>
+
+  <script>
+    const messagesEl = document.getElementById("messages");
+    const chatForm = document.getElementById("chatForm");
+    const messageInput = document.getElementById("messageInput");
+    const sendButton = document.getElementById("sendButton");
+
+    const history = [];
+    let isSending = false;
+    let booted = false;
+
+    function addMessage(text, role) {
+      if (!text) {
+        return;
+      }
+      const bubble = document.createElement("div");
+      bubble.className = `bubble ${role}`;
+      bubble.textContent = text;
+      messagesEl.appendChild(bubble);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function stripCodeFences(text) {
+      return String(text || "").replace(/```(?:json)?\s*([\s\S]*?)\s*```/gi, "$1").trim();
+    }
+
+    function extractJSON(text) {
+      const cleaned = stripCodeFences(text);
+      const start = cleaned.indexOf('{');
+      const end = cleaned.lastIndexOf('}');
+      if (start === -1 || end === -1) return null;
+      try {
+        const parsed = JSON.parse(cleaned.substring(start, end + 1));
+        if (parsed.complaint_company) return parsed;
+      } catch(e) {}
+      return null;
+    }
+
+    async function postChat(message, priorHistory) {
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message, history: priorHistory }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Request failed with status ${response.status}`);
+      }
+
+      const data = await response.json();
+      if (typeof data === "string") {
+        return data;
+      }
+      if (data && typeof data.reply === "string") {
+        return data.reply;
+      }
+      return "Sorry, I could not generate a response.";
+    }
+
+    async function startFiling(complaint) {
+      const response = await fetch("/api/file", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(complaint),
+      });
+
+      if (!response.ok) {
+        throw new Error("Could not start filing.");
+      }
+
+      const result = await response.json();
+      localStorage.setItem("grippy_routing", JSON.stringify(result.routing || null));
+      localStorage.setItem("grippy_complaint", JSON.stringify(complaint));
+
+      if (!result.run_id) {
+        throw new Error("Missing run ID.");
+      }
+
+      setTimeout(() => {
+        window.location.href = `/status?run_id=${encodeURIComponent(result.run_id)}`;
+      }, 2000);
+    }
+
+    async function handleAssistantReply(replyText) {
+      const parsed = extractJSON(replyText);
+      if (!parsed) {
+        addMessage(replyText, "ai");
+        history.push({ role: "assistant", content: replyText });
+        return;
+      }
+
+      const cleanedReply = stripCodeFences(replyText);
+      const jsonStart = cleanedReply.indexOf("{");
+      const introText = jsonStart === -1 ? "" : cleanedReply.substring(0, jsonStart).trim();
+      const visibleText = introText || "Got it. I'm filing this right now. Sit tight.";
+      addMessage(visibleText, "ai");
+      history.push({ role: "assistant", content: visibleText });
+
+      try {
+        await startFiling(parsed);
+      } catch (error) {
+        const fallback = "I couldn't start filing right now. Please try again.";
+        addMessage(fallback, "ai");
+        history.push({ role: "assistant", content: fallback });
+      }
+    }
+
+    async function sendMessage(message, shouldAddUserMessage) {
+      if (isSending) {
+        return;
+      }
+
+      const text = message.trim();
+      let requestHistory = [...history];
+
+      if (shouldAddUserMessage) {
+        if (!text) {
+          return;
+        }
+        addMessage(text, "user");
+        history.push({ role: "user", content: text });
+        requestHistory = [...history];
+        messageInput.value = "";
+      }
+
+      isSending = true;
+      sendButton.disabled = true;
+
+      try {
+        const reply = await postChat(text, requestHistory);
+        await handleAssistantReply(reply);
+      } catch (error) {
+        const fallback = "Something went wrong. Please try again.";
+        addMessage(fallback, "ai");
+        history.push({ role: "assistant", content: fallback });
+      } finally {
+        isSending = false;
+        sendButton.disabled = false;
+        messageInput.focus();
+      }
+    }
+
+    chatForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      void sendMessage(messageInput.value, true);
+    });
+
+    function resetChatState() {
+      messagesEl.innerHTML = "";
+      history.length = 0;
+      messageInput.value = "";
+      isSending = false;
+      sendButton.disabled = false;
+    }
+
+    function bootChat(force = false) {
+      if (booted && !force) {
+        return;
+      }
+      booted = true;
+      resetChatState();
+      void sendMessage("", false);
+    }
+
+    window.addEventListener("pageshow", (event) => {
+      if (event.persisted) {
+        bootChat(true);
+      }
+    });
+
+    bootChat();
+  </script>
+</body>
+</html>

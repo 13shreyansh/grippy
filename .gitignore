@@ -1,0 +1,7 @@
+.env
+__pycache__/
+*.pyc
+.DS_Store
+node_modules/
+test_browser_use.py
+test_*.py
